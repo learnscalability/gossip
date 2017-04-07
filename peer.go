@@ -2,10 +2,13 @@ package main
 
 import (
 	"flag"
+	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 )
 
 func udpHandler(conn *net.UDPConn) {
@@ -24,28 +27,83 @@ func udpHandler(conn *net.UDPConn) {
 	}
 }
 
+func commandHandler(laddr *net.UDPAddr) http.HandlerFunc {
+	return func (w http.ResponseWriter, r *http.Request) {
+		var (
+			body []byte
+			paddr *net.UDPAddr
+			err error
+			conn *net.UDPConn
+			i int
+			buf []byte
+		)
+		body, err = ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Println("Failed to read request body with error: %+v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		paddr, err = net.ResolveUDPAddr("udp", string(body))
+		if err != nil {
+			log.Println("Failed to prepare peer address to send datagrams to: %+v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		conn, err = net.DialUDP("udp", laddr, paddr)
+		if err != nil {
+			log.Println("Failed to connect to UDP server: %+v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+		for i = 1; i <= 10; i++ {
+			buf = []byte(strconv.Itoa(i))
+			_, err = conn.Write(buf)
+			if err != nil {
+				log.Fatalf("Failed to publish datagram %d with error: %+v", i, err)
+			}
+		}
+	}
+}
+
 func main() {
 	var (
+		local string
 		bind string
+		command string
 		saddr *net.UDPAddr
+		laddr *net.UDPAddr
 		err error
 		conn *net.UDPConn
 		sigs = make(chan os.Signal)
 		sig os.Signal
 	)
+	flag.StringVar(&command, "command", ":8000", "http command api")
 	flag.StringVar(&bind, "bind", ":3000", "where to listen for connections")
+	flag.StringVar(&local, "local", ":3001", "where to publish messages from")
 	flag.Parse()
+	// Setting up UDP listener
 	saddr, err = net.ResolveUDPAddr("udp", bind)
 	if err != nil {
 		log.Fatalf("Failed to prepare address to bind to UDP: %+v", err)
+	}
+	laddr, err = net.ResolveUDPAddr("udp", local)
+	if err != nil {
+		log.Fatalf("Failed to prepare local address to source datagrams: %+v", err)
 	}
 	conn, err = net.ListenUDP("udp", saddr)
 	if err != nil {
 		log.Fatalf("Failed to start UDP server: %+v", err)
 	}
 	defer conn.Close()
-	log.Printf("UDP server started\n")
+	log.Printf("UDP server started on %s\n", bind)
 	go udpHandler(conn)
+	// Setting up http rest api for commands
+	http.HandleFunc("/send", commandHandler(laddr))
+	go func() {
+		log.Printf("HTTP command server started on %s\n", command)
+		http.ListenAndServe(command, nil)
+	}()
 	// Setup termination handlers.
 	signal.Notify(sigs, os.Interrupt, os.Kill)
 	sig = <-sigs
