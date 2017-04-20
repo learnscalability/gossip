@@ -9,6 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+
+	"github.com/golang/protobuf/proto"
+	"github.com/learnscalability/gossip/pb"
 )
 
 func udpHandler(conn *net.UDPConn) {
@@ -17,13 +20,18 @@ func udpHandler(conn *net.UDPConn) {
 		caddr *net.UDPAddr
 		err error
 		buf = make([]byte, 10 * 1024) // 10KB
+		update pb.Update
 	)
 	for {
 		n, caddr, err = conn.ReadFromUDP(buf)
 		if err != nil {
 			log.Fatalf("Failed to read datagram: %T %+v", err, err)
 		}
-		log.Printf("Received data `%s` from %s\n", buf[:n], caddr)
+		err = proto.Unmarshal(buf[:n], &update)
+		if err != nil {
+			log.Fatalf("Unable to unmarshal update data: %+v", err)
+		}
+		log.Printf("Received data `%s` from %s\n", update.Payload, caddr)
 	}
 }
 
@@ -34,6 +42,7 @@ func commandHandler(laddr *net.UDPAddr) http.HandlerFunc {
 			paddr *net.UDPAddr
 			err error
 			conn *net.UDPConn
+			update pb.Update
 			i int
 			buf []byte
 		)
@@ -57,7 +66,13 @@ func commandHandler(laddr *net.UDPAddr) http.HandlerFunc {
 		}
 		defer conn.Close()
 		for i = 1; i <= 10; i++ {
-			buf = []byte(strconv.Itoa(i))
+			update = pb.Update{
+				Payload: []byte(strconv.Itoa(i)),
+			}
+			buf, err = proto.Marshal(&update)
+			if err != nil {
+				log.Fatalf("Failed to marshall update %d with error: %+v", i, err)
+			}
 			_, err = conn.Write(buf)
 			if err != nil {
 				log.Fatalf("Failed to publish datagram %d with error: %+v", i, err)

@@ -2,17 +2,7 @@ syntax = "proto3";
 
 package pb;
 
-service Gossip {
-  rpc Contact(Update) returns (Response) {}
-  rpc Join(Update) returns (Response) {}
-}
-
 message Update {
   // the protobuf payload, doesn't matter for the protocol.
   bytes payload = 1;
-  // a list of known peers that the node has been able to contact recently. Size?
-  repeated string known = 2;
-}
-
-message Response {
 }
