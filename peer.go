@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"io/ioutil"
 	"log"
@@ -60,7 +61,7 @@ func commandHandler(laddr *net.UDPAddr) http.HandlerFunc {
 		}
 		conn, err = net.DialUDP("udp", laddr, paddr)
 		if err != nil {
-			log.Println("Failed to connect to UDP server: %+v", err)
+			log.Printf("Failed to connect to UDP server: %+v\n", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -81,43 +82,58 @@ func commandHandler(laddr *net.UDPAddr) http.HandlerFunc {
 	}
 }
 
+type Peer struct {
+	Pid string `json:"pid"`
+	Local string `json:"local"`
+	Bind string `json:"bind"`
+	CmdBind string `json:"cmdbind,omitempty"`
+	Peers []Peer `json:"peers,omitempty"`
+}
+
 func main() {
 	var (
-		local string
-		bind string
-		command string
 		saddr *net.UDPAddr
 		laddr *net.UDPAddr
 		err error
 		conn *net.UDPConn
 		sigs = make(chan os.Signal)
 		sig os.Signal
+		fp *os.File
+		peer Peer
 	)
-	flag.StringVar(&command, "command", ":8000", "http command api")
-	flag.StringVar(&bind, "bind", ":3000", "where to listen for connections")
-	flag.StringVar(&local, "local", ":3001", "where to publish messages from")
 	flag.Parse()
+	if flag.NArg() != 1 {
+		log.Fatal("Expected first argument to be a config file")
+	}
+	fp, err = os.Open(flag.Arg(0))
+	if err != nil {
+		log.Fatalf("Failed to open file `%d` with error: %+v", flag.Arg(0), err)
+	}
+	err = json.NewDecoder(fp).Decode(&peer)
+	if err != nil {
+		log.Fatalf("Failed to parse json peer config file with error: %+v", err)
+	}
 	// Setting up UDP listener
-	saddr, err = net.ResolveUDPAddr("udp", bind)
+	saddr, err = net.ResolveUDPAddr("udp", peer.Bind)
 	if err != nil {
 		log.Fatalf("Failed to prepare address to bind to UDP: %+v", err)
 	}
-	laddr, err = net.ResolveUDPAddr("udp", local)
+	laddr, err = net.ResolveUDPAddr("udp", peer.Local)
 	if err != nil {
-		log.Fatalf("Failed to prepare local address to source datagrams: %+v", err)
+		log.Fatalf("Failed to prepare local bind address to source datagrams: %+v", err)
 	}
 	conn, err = net.ListenUDP("udp", saddr)
 	if err != nil {
 		log.Fatalf("Failed to start UDP server: %+v", err)
 	}
 	defer conn.Close()
-	log.Printf("UDP server started on %s\n", bind)
+	log.Printf("UDP peer listening on `%s` and publishing from `%s`\n", peer.Bind, peer.Local)
 	go udpHandler(conn)
 	// Setting up http rest api for commands
 	http.HandleFunc("/send", commandHandler(laddr))
 	go func() {
-		log.Printf("HTTP command server started on %s\n", command)
-		http.ListenAndServe(command, nil)
+		log.Printf("HTTP command server started on %s\n", peer.CmdBind)
+		http.ListenAndServe(peer.CmdBind, nil)
 	}()
 	// Setup termination handlers.
 	signal.Notify(sigs, os.Interrupt, os.Kill)

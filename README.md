@@ -2,8 +2,8 @@
 - [x] switch to UDP.
 - [x] have servers work as clients as well.
 - [x] add rest interface to communicate with peers: query the data, add new data, join, etc.
-- [_] use protocol buffers for encoding
-- [_] add simple json configuration file
+- [x] use protocol buffers for encoding
+- [x] add simple json configuration file
 - [_] one peer connects to different/multiple peers via a CLI interface.
 - [_] add structure: separate communication from core state!
 - [_] implement the join mechanism
