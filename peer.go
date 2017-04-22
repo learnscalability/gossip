@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -15,16 +17,81 @@ import (
 	"github.com/learnscalability/gossip/pb"
 )
 
-func udpHandler(conn *net.UDPConn) {
+type PeerConfig struct {
+	Pid     string       `json:"pid"`
+	Local   string       `json:"local"`
+	Bind    string       `json:"bind"`
+	CmdBind string       `json:"cmdbind,omitempty"`
+	Peers   []PeerConfig `json:"peers,omitempty"`
+}
+
+type Peer struct {
+	config       *PeerConfig
+	saddr, laddr *net.UDPAddr
+	listener     *net.UDPConn
+	cmdServer    http.Server
+}
+
+func NewPeer(cfg io.Reader) (*Peer, error) {
 	var (
-		n int
-		caddr *net.UDPAddr
+		err  error
+		config PeerConfig
+		peer Peer
+		mux  *http.ServeMux
+	)
+	err = json.NewDecoder(cfg).Decode(&config)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse json peer config file with error: %+v", err)
+	}
+	peer.config = &config
+	// Setting up UDP listener
+	peer.saddr, err = net.ResolveUDPAddr("udp", config.Bind)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to prepare address to bind to UDP: %+v", err)
+	}
+	peer.laddr, err = net.ResolveUDPAddr("udp", config.Local)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to prepare local bind address to source datagrams: %+v", err)
+	}
+	mux = http.NewServeMux()
+	mux.HandleFunc("/send", peer.commandHandler)
+	peer.cmdServer = http.Server{
+		Addr:    config.CmdBind,
+		Handler: mux,
+	}
+	return &peer, nil
+}
+
+// Listen starts both the UDP listener and the HTTP command server.
+func (p *Peer) Listen() error {
+	var (
 		err error
-		buf = make([]byte, 10 * 1024) // 10KB
+	)
+	// start UDP listener.
+	p.listener, err = net.ListenUDP("udp", p.saddr)
+	if err != nil {
+		return fmt.Errorf("Failed to start UDP server with error: %+v", err)
+	}
+	log.Printf("UDP peer listening on `%s` and publishing from `%s`\n", p.config.Bind, p.config.Local)
+	go p.udpHandler()
+	// start http command server.
+	go func() {
+		log.Printf("HTTP command server started on %s\n", p.config.CmdBind)
+		p.cmdServer.ListenAndServe()
+	}()
+	return nil
+}
+
+func (p *Peer) udpHandler() {
+	var (
+		n      int
+		caddr  *net.UDPAddr
+		err    error
+		buf    = make([]byte, 10*1024) // 10KB
 		update pb.Update
 	)
 	for {
-		n, caddr, err = conn.ReadFromUDP(buf)
+		n, caddr, err = p.listener.ReadFromUDP(buf)
 		if err != nil {
 			log.Fatalf("Failed to read datagram: %T %+v", err, err)
 		}
@@ -36,70 +103,63 @@ func udpHandler(conn *net.UDPConn) {
 	}
 }
 
-func commandHandler(laddr *net.UDPAddr) http.HandlerFunc {
-	return func (w http.ResponseWriter, r *http.Request) {
-		var (
-			body []byte
-			paddr *net.UDPAddr
-			err error
-			conn *net.UDPConn
-			update pb.Update
-			i int
-			buf []byte
-		)
-		body, err = ioutil.ReadAll(r.Body)
-		if err != nil {
-			log.Println("Failed to read request body with error: %+v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
+func (p *Peer) commandHandler(w http.ResponseWriter, r *http.Request) {
+	var (
+		body   []byte
+		paddr  *net.UDPAddr
+		err    error
+		conn   *net.UDPConn
+		update pb.Update
+		i      int
+		buf    []byte
+	)
+	body, err = ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Println("Failed to read request body with error: %+v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	paddr, err = net.ResolveUDPAddr("udp", string(body))
+	if err != nil {
+		log.Println("Failed to prepare peer address to send datagrams to: %+v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	conn, err = net.DialUDP("udp", p.laddr, paddr)
+	if err != nil {
+		log.Printf("Failed to connect to UDP server: %+v\n", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
+	for i = 1; i <= 10; i++ {
+		update = pb.Update{
+			Payload: []byte(strconv.Itoa(i)),
 		}
-		paddr, err = net.ResolveUDPAddr("udp", string(body))
+		buf, err = proto.Marshal(&update)
 		if err != nil {
-			log.Println("Failed to prepare peer address to send datagrams to: %+v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+			log.Fatalf("Failed to marshall update %d with error: %+v", i, err)
 		}
-		conn, err = net.DialUDP("udp", laddr, paddr)
+		_, err = conn.Write(buf)
 		if err != nil {
-			log.Printf("Failed to connect to UDP server: %+v\n", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		defer conn.Close()
-		for i = 1; i <= 10; i++ {
-			update = pb.Update{
-				Payload: []byte(strconv.Itoa(i)),
-			}
-			buf, err = proto.Marshal(&update)
-			if err != nil {
-				log.Fatalf("Failed to marshall update %d with error: %+v", i, err)
-			}
-			_, err = conn.Write(buf)
-			if err != nil {
-				log.Fatalf("Failed to publish datagram %d with error: %+v", i, err)
-			}
+			log.Fatalf("Failed to publish datagram %d with error: %+v", i, err)
 		}
 	}
 }
 
-type Peer struct {
-	Pid string `json:"pid"`
-	Local string `json:"local"`
-	Bind string `json:"bind"`
-	CmdBind string `json:"cmdbind,omitempty"`
-	Peers []Peer `json:"peers,omitempty"`
+// Close closes both the UDP listener and the HTTP command server.
+func (p *Peer) Close() {
+	p.listener.Close()
+	p.cmdServer.Close()
 }
 
 func main() {
 	var (
-		saddr *net.UDPAddr
-		laddr *net.UDPAddr
-		err error
-		conn *net.UDPConn
+		err  error
 		sigs = make(chan os.Signal)
-		sig os.Signal
-		fp *os.File
-		peer Peer
+		sig  os.Signal
+		fp   *os.File
+		peer *Peer
 	)
 	flag.Parse()
 	if flag.NArg() != 1 {
@@ -109,181 +169,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open file `%d` with error: %+v", flag.Arg(0), err)
 	}
-	err = json.NewDecoder(fp).Decode(&peer)
+	peer, err = NewPeer(fp)
 	if err != nil {
-		log.Fatalf("Failed to parse json peer config file with error: %+v", err)
+		log.Fatal(err)
 	}
-	// Setting up UDP listener
-	saddr, err = net.ResolveUDPAddr("udp", peer.Bind)
+	err = peer.Listen()
 	if err != nil {
-		log.Fatalf("Failed to prepare address to bind to UDP: %+v", err)
+		log.Fatal(err)
 	}
-	laddr, err = net.ResolveUDPAddr("udp", peer.Local)
-	if err != nil {
-		log.Fatalf("Failed to prepare local bind address to source datagrams: %+v", err)
-	}
-	conn, err = net.ListenUDP("udp", saddr)
-	if err != nil {
-		log.Fatalf("Failed to start UDP server: %+v", err)
-	}
-	defer conn.Close()
-	log.Printf("UDP peer listening on `%s` and publishing from `%s`\n", peer.Bind, peer.Local)
-	go udpHandler(conn)
-	// Setting up http rest api for commands
-	http.HandleFunc("/send", commandHandler(laddr))
-	go func() {
-		log.Printf("HTTP command server started on %s\n", peer.CmdBind)
-		http.ListenAndServe(peer.CmdBind, nil)
-	}()
+	defer peer.Close()
 	// Setup termination handlers.
 	signal.Notify(sigs, os.Interrupt, os.Kill)
 	sig = <-sigs
 	log.Fatalf("Received signal %+v. Terminating", sig)
 }
-
-
-/*
-import (
-	"io"
-	"math/rand"
-	"net"
-
-	"github.com/learnscalability/gossip/pb"
-	"google.golang.org/grpc"
-)
-
-type StoredMessage struct {
-	Payload []byte
-	SendCount uint8
-}
-
-// Implements the Gossip interface
-type Peer struct {
-	ID string
-	Bind string
-	MaxSendTimes uint8 // param "t"
-	Fanout uint8 // param "f"
-	Buffer []*StoredMessage
-	BufferCapacity uint8 // param "b"
-	View []string
-	ViewSize uint8 // param "l"
-}
-
-func NewPeer() (*Peer, error) {
-	if id, err = newUUID(); err != nil {
-		return nil, err
-	}
-	return &Peer{
-		ID: id
-	}, nil
-}
-
-func (p *Peer) Listen() error {
-	var (
-		ln  net.Listener
-		err error
-		srv *grpc.Server
-	)
-	ln, err = net.Listen("tcp", s.Bind)
-	if err != nil {
-		return err
-	}
-	srv = grpc.NewServer()
-	pb.RegisterGossipServer(srv, p)
-	go p.run(srv.Context())
-	return srv.Serve(ln)
-}
-
-func (p *Peer) Join(contact string) error {
-	join = &pb.Update{
-		Known: []string{contact},
-	}
-	for peerAddr := range View {
-		count, err := p.SendTo(peerAddr, sm)
-	}
-	p.View = append(p.View, contact)
-}
-
-func (p *Peer) Contact(u *pb.Update) (*pb.Response, error) {
-	p.addToBuffer(u)
-	return &pb.Reponse{}, nil
-}
-
-// Helpers
-
-// run should be executed as a goroutine.
-func (p *Peer) run(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	for {
-		select {
-		case <-ctx.Done():
-			ticker.Stop()
-			return
-		case <-ticker.C:
-			for sm := range p.Buffer {
-				for peerAddr := range p.randomView() {
-					count, err := p.SendTo(peerAddr, sm)
-					if err != nil {
-					}
-				}
-			}
-		}
-	}
-}
-
-func (p *Peer) SendTo(addr string, sm *StoredMessage) (newSendCount int, err error) {
-	var cl, err = p.NewClient(addr)
-	if err != nil {
-		return 0, err
-	}
-	defer cl.Close()
-	var u = &pb.Update{
-		Payload: sm.Payload,
-		Known: p.Buffer,
-	}
-	if err = cl.Update(u); err != nil {
-		return 0, err
-	}
-	return sm.SendCount + 1, nil
-}
-
-// NewClient connects to the server url given.
-func (p *Peer) NewClient(server string) (*pb.GossipClient, error) {
-	var (
-		conn   *grpc.ClientConn
-		err    error
-		client pb.EchoClient
-	)
-	conn, err = grpc.Dial(server, grpc.WithInsecure())
-	if err != nil {
-		return nil, err
-	}
-	client = pb.NewGossipClient(conn)
-	return client, nil
-}
-
-func (p *Peer) randomView() []string {
-}
-
-func (p *Peer) addToBuffer(u *pb.Update) {
-	var sm = &StoredMessage{
-		Payload: u.Payload,
-		SendCount: 0,
-	}
-	p.Buffer = append(b.Buffer, sm)
-}
-
-// newUUID generates a random UUID according to RFC 4122
-func newUUID() (string, error) {
-	uuid := make([]byte, 16)
-	n, err := io.ReadFull(rand.Reader, uuid)
-	if n != len(uuid) || err != nil {
-		return "", err
-	}
-	// variant bits; see section 4.1.1
-	uuid[8] = uuid[8]&^0xc0 | 0x80
-	// version 4 (pseudo-random); see section 4.1.3
-	uuid[6] = uuid[6]&^0xf0 | 0x40
-	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:]), nil
-}
-*/
