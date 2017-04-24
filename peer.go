@@ -5,28 +5,34 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/learnscalability/gossip/pb"
 )
 
+// PeerConfig is used to unpack configurations from a config file.
 type PeerConfig struct {
-	Pid     string       `json:"pid"`
-	Local   string       `json:"local"`
-	Bind    string       `json:"bind"`
-	CmdBind string       `json:"cmdbind,omitempty"`
-	Peers   []PeerConfig `json:"peers,omitempty"`
+	// Peer Unique Identifier.
+	Pid string `json:"pid"`
+	// The address where the peer sends datagrams from.
+	Local string `json:"local"`
+	// The address where the peer listens for datagrams.
+	Bind string `json:"bind"`
+	// HTTP interface used to control the peer.
+	CmdBind string `json:"cmdbind,omitempty"`
+	// Initial list of known peers.
+	Peers []PeerConfig `json:"peers,omitempty"`
 }
 
+// Peer is the peer running this process.
 type Peer struct {
 	config       *PeerConfig
+	view         *View
 	saddr, laddr *net.UDPAddr
 	listener     *net.UDPConn
 	cmdServer    http.Server
@@ -34,10 +40,11 @@ type Peer struct {
 
 func NewPeer(cfg io.Reader) (*Peer, error) {
 	var (
-		err  error
+		err    error
 		config PeerConfig
-		peer Peer
-		mux  *http.ServeMux
+		peer   Peer
+		mux    *http.ServeMux
+		view   *View
 	)
 	err = json.NewDecoder(cfg).Decode(&config)
 	if err != nil {
@@ -53,12 +60,19 @@ func NewPeer(cfg io.Reader) (*Peer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Failed to prepare local bind address to source datagrams: %+v", err)
 	}
+	// Setting up the http command endpoints.
 	mux = http.NewServeMux()
-	mux.HandleFunc("/send", peer.commandHandler)
+	mux.HandleFunc("/send", peer.sendHandler)
 	peer.cmdServer = http.Server{
 		Addr:    config.CmdBind,
 		Handler: mux,
 	}
+	// Setting up the peers connection
+	view, err = NewView(peer.laddr, config.Peers)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to construct the set of peers in the view: %+v", err)
+	}
+	peer.view = view
 	return &peer, nil
 }
 
@@ -103,54 +117,62 @@ func (p *Peer) udpHandler() {
 	}
 }
 
-func (p *Peer) commandHandler(w http.ResponseWriter, r *http.Request) {
+type SendPayload struct {
+	Pid     string `json:"pid"`
+	Content string `json:"content"`
+}
+
+func (p *Peer) Send(sp *SendPayload) error {
 	var (
-		body   []byte
-		paddr  *net.UDPAddr
+		rp     *RemotePeer
 		err    error
-		conn   *net.UDPConn
 		update pb.Update
-		i      int
 		buf    []byte
 	)
-	body, err = ioutil.ReadAll(r.Body)
+	rp, err = p.view.Get(sp.Pid)
+	if err != nil {
+		return fmt.Errorf("Peer with Pid %s not found: %+v", sp.Pid, err)
+	}
+	update = pb.Update{
+		Payload: []byte(sp.Content),
+	}
+	buf, err = proto.Marshal(&update)
+	if err != nil {
+		return fmt.Errorf("Failed to marshall update %+v with error: %+v", sp, err)
+	}
+	_, err = rp.conn.Write(buf)
+	if err != nil {
+		return fmt.Errorf("Failed to publish update %+v with error: %+v", sp, err)
+	}
+	return nil
+}
+
+// sendHandler expects a body of the following format: {pid: string, content: string}
+func (p *Peer) sendHandler(w http.ResponseWriter, r *http.Request) {
+	var (
+		sp  SendPayload
+		err error
+	)
+	err = json.NewDecoder(r.Body).Decode(&sp)
 	if err != nil {
 		log.Println("Failed to read request body with error: %+v", err)
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	paddr, err = net.ResolveUDPAddr("udp", string(body))
+	err = p.Send(&sp)
 	if err != nil {
-		log.Println("Failed to prepare peer address to send datagrams to: %+v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		log.Printf("Failed to send message to peer %+v with error %+v", sp, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	conn, err = net.DialUDP("udp", p.laddr, paddr)
-	if err != nil {
-		log.Printf("Failed to connect to UDP server: %+v\n", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	defer conn.Close()
-	for i = 1; i <= 10; i++ {
-		update = pb.Update{
-			Payload: []byte(strconv.Itoa(i)),
-		}
-		buf, err = proto.Marshal(&update)
-		if err != nil {
-			log.Fatalf("Failed to marshall update %d with error: %+v", i, err)
-		}
-		_, err = conn.Write(buf)
-		if err != nil {
-			log.Fatalf("Failed to publish datagram %d with error: %+v", i, err)
-		}
-	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // Close closes both the UDP listener and the HTTP command server.
 func (p *Peer) Close() {
 	p.listener.Close()
 	p.cmdServer.Close()
+	p.view.Cleanup()
 }
 
 func main() {

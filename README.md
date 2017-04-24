@@ -4,8 +4,9 @@
 - [x] add rest interface to communicate with peers: query the data, add new data, join, etc.
 - [x] use protocol buffers for encoding
 - [x] add simple json configuration file
-- [_] one peer connects to different/multiple peers via a CLI interface.
-- [_] add structure: separate communication from core state!
+- [x] introduce the view: peer manages connections to peers in it's list: add, remove, cleanup
+- [_] peer sends data to all peers in it's list.
 - [_] implement the join mechanism
+- [_] add structure: separate communication from core state!
 - [_] implement the communication protocol
 - [_] investigate https://github.com/xtaci/kcp-go
