@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/learnscalability/gossip/pb"
@@ -31,7 +30,7 @@ type Peer struct {
 	config    *PeerConfig
 	view      View
 	listener  net.PacketConn
-	cmdServer http.Server
+	cmdServer *CmdServer
 }
 
 func NewPeer(cfg io.Reader) (*Peer, error) {
@@ -39,7 +38,6 @@ func NewPeer(cfg io.Reader) (*Peer, error) {
 		err    error
 		config PeerConfig
 		peer   Peer
-		mux    *http.ServeMux
 	)
 	err = json.NewDecoder(cfg).Decode(&config)
 	if err != nil {
@@ -47,12 +45,7 @@ func NewPeer(cfg io.Reader) (*Peer, error) {
 	}
 	peer.config = &config
 	// Setting up the http command endpoints.
-	mux = http.NewServeMux()
-	mux.HandleFunc("/send", peer.sendHandler)
-	peer.cmdServer = http.Server{
-		Addr:    config.CmdBind,
-		Handler: mux,
-	}
+	peer.cmdServer = NewCmdServer(&peer)
 	// Setting up the peers connection
 	peer.view = NewView(config.Peers)
 	return &peer, nil
@@ -74,10 +67,7 @@ func (p *Peer) Listen() error {
 	p.listener = listener
 	go p.udpHandler()
 	// start http command server.
-	go func() {
-		log.Printf("HTTP command server started on %s\n", p.config.CmdBind)
-		p.cmdServer.ListenAndServe()
-	}()
+	go p.cmdServer.Run()
 	return nil
 }
 
@@ -102,11 +92,6 @@ func (p *Peer) udpHandler() {
 		}
 		log.Printf("Received data `%s` from %s\n", update.Payload, caddr)
 	}
-}
-
-type SendPayload struct {
-	Pid     string `json:"pid"`
-	Content string `json:"content"`
 }
 
 func (p *Peer) Send(sp *SendPayload) error {
@@ -139,27 +124,6 @@ func (p *Peer) Send(sp *SendPayload) error {
 	}
 	log.Printf("Published update %+v to remote peer %+v", sp, pc)
 	return nil
-}
-
-// sendHandler expects a body of the following format: {pid: string, content: string}
-func (p *Peer) sendHandler(w http.ResponseWriter, r *http.Request) {
-	var (
-		sp  SendPayload
-		err error
-	)
-	err = json.NewDecoder(r.Body).Decode(&sp)
-	if err != nil {
-		log.Println("Failed to read request body with error: %+v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	err = p.Send(&sp)
-	if err != nil {
-		log.Printf("Failed to send message to peer %+v with error %+v", sp, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
 }
 
 // Close closes both the UDP listener and the HTTP command server.

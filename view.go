@@ -6,8 +6,8 @@ type View map[string]PeerConfig
 // NewView create a new set of remote peers and build connections to all of them.
 func NewView(configs []PeerConfig) View {
 	var (
-		v   View
-		pc  PeerConfig
+		v  View
+		pc PeerConfig
 	)
 	v = make(View)
 	for _, pc = range configs {
