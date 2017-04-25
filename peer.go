@@ -1,5 +1,7 @@
 package main
 
+// See: http://www.minaandrawos.com/2016/05/14/udp-vs-tcp-in-golang/
+
 import (
 	"encoding/json"
 	"flag"
@@ -19,8 +21,6 @@ import (
 type PeerConfig struct {
 	// Peer Unique Identifier.
 	Pid string `json:"pid"`
-	// The address where the peer sends datagrams from.
-	Local string `json:"local"`
 	// The address where the peer listens for datagrams.
 	Bind string `json:"bind"`
 	// HTTP interface used to control the peer.
@@ -31,11 +31,10 @@ type PeerConfig struct {
 
 // Peer is the peer running this process.
 type Peer struct {
-	config       *PeerConfig
-	view         *View
-	saddr, laddr *net.UDPAddr
-	listener     *net.UDPConn
-	cmdServer    http.Server
+	config    *PeerConfig
+	view      View
+	listener  net.PacketConn
+	cmdServer http.Server
 }
 
 func NewPeer(cfg io.Reader) (*Peer, error) {
@@ -44,22 +43,12 @@ func NewPeer(cfg io.Reader) (*Peer, error) {
 		config PeerConfig
 		peer   Peer
 		mux    *http.ServeMux
-		view   *View
 	)
 	err = json.NewDecoder(cfg).Decode(&config)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to parse json peer config file with error: %+v", err)
 	}
 	peer.config = &config
-	// Setting up UDP listener
-	peer.saddr, err = net.ResolveUDPAddr("udp", config.Bind)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to prepare address to bind to UDP: %+v", err)
-	}
-	peer.laddr, err = net.ResolveUDPAddr("udp", config.Local)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to prepare local bind address to source datagrams: %+v", err)
-	}
 	// Setting up the http command endpoints.
 	mux = http.NewServeMux()
 	mux.HandleFunc("/send", peer.sendHandler)
@@ -68,25 +57,24 @@ func NewPeer(cfg io.Reader) (*Peer, error) {
 		Handler: mux,
 	}
 	// Setting up the peers connection
-	view, err = NewView(peer.laddr, config.Peers)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to construct the set of peers in the view: %+v", err)
-	}
-	peer.view = view
+	peer.view = NewView(config.Peers)
 	return &peer, nil
 }
 
 // Listen starts both the UDP listener and the HTTP command server.
 func (p *Peer) Listen() error {
 	var (
-		err error
+		err      error
+		listener net.PacketConn
 	)
-	// start UDP listener.
-	p.listener, err = net.ListenUDP("udp", p.saddr)
+	// Setting up UDP listener
+	listener, err = net.ListenPacket("udp", p.config.Bind)
 	if err != nil {
-		return fmt.Errorf("Failed to start UDP server with error: %+v", err)
+		return fmt.Errorf("Unable to bind to udp address %s with error: %+v", p.config.Bind, err)
+	} else {
+		log.Printf("UDP peer started on %s and accepting connections on %v", p.config.Bind, listener.LocalAddr())
 	}
-	log.Printf("UDP peer listening on `%s` and publishing from `%s`\n", p.config.Bind, p.config.Local)
+	p.listener = listener
 	go p.udpHandler()
 	// start http command server.
 	go func() {
@@ -96,16 +84,18 @@ func (p *Peer) Listen() error {
 	return nil
 }
 
+// udpHandler read datagrams that are comming through the pipes.
+// Should be run as a goroutine.
 func (p *Peer) udpHandler() {
 	var (
 		n      int
-		caddr  *net.UDPAddr
+		caddr  net.Addr
 		err    error
 		buf    = make([]byte, 10*1024) // 10KB
 		update pb.Update
 	)
 	for {
-		n, caddr, err = p.listener.ReadFromUDP(buf)
+		n, caddr, err = p.listener.ReadFrom(buf)
 		if err != nil {
 			log.Fatalf("Failed to read datagram: %T %+v", err, err)
 		}
@@ -124,15 +114,13 @@ type SendPayload struct {
 
 func (p *Peer) Send(sp *SendPayload) error {
 	var (
-		rp     *RemotePeer
-		err    error
-		update pb.Update
 		buf    []byte
+		update pb.Update
+		err    error
+		pc     PeerConfig
+		ok     bool
+		conn   net.Conn
 	)
-	rp, err = p.view.Get(sp.Pid)
-	if err != nil {
-		return fmt.Errorf("Peer with Pid %s not found: %+v", sp.Pid, err)
-	}
 	update = pb.Update{
 		Payload: []byte(sp.Content),
 	}
@@ -140,10 +128,19 @@ func (p *Peer) Send(sp *SendPayload) error {
 	if err != nil {
 		return fmt.Errorf("Failed to marshall update %+v with error: %+v", sp, err)
 	}
-	_, err = rp.conn.Write(buf)
+	if pc, ok = p.view[sp.Pid]; !ok {
+		return fmt.Errorf("Could not find remote peer with pid %s", sp.Pid)
+	}
+	conn, err = net.Dial("udp", pc.Bind)
+	if err != nil {
+		return fmt.Errorf("Failed to contact remote peer %+v with error: %+v", pc, err)
+	}
+	defer conn.Close()
+	_, err = conn.Write(buf)
 	if err != nil {
 		return fmt.Errorf("Failed to publish update %+v with error: %+v", sp, err)
 	}
+	log.Printf("Published update %+v to remote peer %+v", sp, pc)
 	return nil
 }
 
@@ -172,7 +169,6 @@ func (p *Peer) sendHandler(w http.ResponseWriter, r *http.Request) {
 func (p *Peer) Close() {
 	p.listener.Close()
 	p.cmdServer.Close()
-	p.view.Cleanup()
 }
 
 func main() {
