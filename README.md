@@ -5,7 +5,8 @@
 - [x] use protocol buffers for encoding
 - [x] add simple json configuration file
 - [x] introduce the view: peer manages connections to peers in it's list: add, remove, cleanup
-- [_] peer sends data to all peers in it's list.
+- [x] peer sends data to subset of peers in it's list.
+- [_] implement types of exchanged messages
 - [_] implement the join mechanism
 - [_] add structure: separate communication from core state!
 - [_] implement the communication protocol

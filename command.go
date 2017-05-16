@@ -25,14 +25,18 @@ func NewCmdServer(peer *Peer) *CmdServer {
 	}
 	cs = CmdServer{server, peer}
 	mux.HandleFunc("/send", cs.sendHandler)
+	mux.HandleFunc("/join", cs.joinHandler)
 	return &cs
 }
 
+// Run starts the http listener. Should be run as a goroutine.
 func (cs *CmdServer) Run() {
 	log.Printf("HTTP command server started on %s\n", cs.server.Addr)
 	cs.server.ListenAndServe()
 }
 
+// Close terminates the server and all connections without waiting for them
+// to close gracefully.
 func (cs *CmdServer) Close() {
 	log.Println("HTTP command server terminating")
 	cs.server.Close()
@@ -63,4 +67,12 @@ func (cs *CmdServer) sendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+type JoinPayload struct {
+
+}
+
+// joinHandler works by
+func (cs *CmdServer) joinHandler(w http.ResponseWriter, r *http.Request) {
 }
