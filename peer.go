@@ -94,7 +94,7 @@ func (p *Peer) udpHandler() {
 	}
 }
 
-func (p *Peer) Send(sp *SendPayload) error {
+func (p *Peer) Send(pid string, content string) error {
 	var (
 		buf    []byte
 		update pb.Update
@@ -104,14 +104,14 @@ func (p *Peer) Send(sp *SendPayload) error {
 		conn   net.Conn
 	)
 	update = pb.Update{
-		Payload: []byte(sp.Content),
+		Payload: []byte(content),
 	}
 	buf, err = proto.Marshal(&update)
 	if err != nil {
-		return fmt.Errorf("Failed to marshall update %+v with error: %+v", sp, err)
+		return fmt.Errorf("Failed to marshall update %+s with error: %+v", update, err)
 	}
-	if pc, ok = p.view[sp.Pid]; !ok {
-		return fmt.Errorf("Could not find remote peer with pid %s", sp.Pid)
+	if pc, ok = p.view[pid]; !ok {
+		return fmt.Errorf("Could not find remote peer with pid %s", pid)
 	}
 	conn, err = net.Dial("udp", pc.Bind)
 	if err != nil {
@@ -120,9 +120,9 @@ func (p *Peer) Send(sp *SendPayload) error {
 	defer conn.Close()
 	_, err = conn.Write(buf)
 	if err != nil {
-		return fmt.Errorf("Failed to publish update %+v with error: %+v", sp, err)
+		return fmt.Errorf("Failed to publish update %+s with error: %+v", content, err)
 	}
-	log.Printf("Published update %+v to remote peer %+v", sp, pc)
+	log.Printf("Published update %+v to remote peer %+s", pid, pc)
 	return nil
 }
 

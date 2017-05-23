@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
 )
@@ -25,6 +26,7 @@ func NewCmdServer(peer *Peer) *CmdServer {
 	}
 	cs = CmdServer{server, peer}
 	mux.HandleFunc("/send", cs.sendHandler)
+	mux.HandleFunc("/spread", cs.spreadHandler)
 	return &cs
 }
 
@@ -56,11 +58,33 @@ func (cs *CmdServer) sendHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	err = cs.peer.Send(&sp)
+	err = cs.peer.Send(sp.Pid, sp.Content)
 	if err != nil {
 		log.Printf("Failed to send message to peer %+v with error %+v", sp, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (cs *CmdServer) spreadHandler(w http.ResponseWriter, r *http.Request) {
+	var (
+		payload []byte
+		spayload string
+		err error
+		pid string
+	)
+	payload, err = ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Println("Failed to read request body with error: %+v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	spayload = string(payload)
+	for pid = range cs.peer.view {
+		err = cs.peer.Send(pid, spayload)
+		if err != nil {
+			log.Printf("Failed to send payload `%s` to peer id `%s` with error: %+v", spayload, pid, err)
+		}
+	}
 }
