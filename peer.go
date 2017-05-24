@@ -126,6 +126,11 @@ func (p *Peer) Send(pid string, content string) error {
 	return nil
 }
 
+// Join works by exchanging the view with the contacted server, while leaving
+// the contacted server to tell all other peers in it's view that the new node joined.
+func (p *Peer) Join() {
+}
+
 // Close closes both the UDP listener and the HTTP command server.
 func (p *Peer) Close() {
 	p.listener.Close()

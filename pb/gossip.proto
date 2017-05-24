@@ -3,6 +3,23 @@ syntax = "proto3";
 package pb;
 
 message Update {
+  // Update messages can be of various types.
+  enum UpdateType {
+    DATA = 0;
+    JOIN = 1;
+  }
+  // The type of message being sent.
+  UpdateType type = 2;
   // the protobuf payload, doesn't matter for the protocol.
   bytes payload = 1;
+}
+
+//
+message JoinResponse {
+  message PeerConfig {
+    string Pid = 0;
+    string Addr = 1;
+  }
+  string Pid = 0;
+  repeaded PeerConfig peers = 1;
 }

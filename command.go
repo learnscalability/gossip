@@ -27,14 +27,18 @@ func NewCmdServer(peer *Peer) *CmdServer {
 	cs = CmdServer{server, peer}
 	mux.HandleFunc("/send", cs.sendHandler)
 	mux.HandleFunc("/spread", cs.spreadHandler)
+	mux.HandleFunc("/join", cs.joinHandler)
 	return &cs
 }
 
+// Run starts the http listener. Should be run as a goroutine.
 func (cs *CmdServer) Run() {
 	log.Printf("HTTP command server started on %s\n", cs.server.Addr)
 	cs.server.ListenAndServe()
 }
 
+// Close terminates the server and all connections without waiting for them
+// to close gracefully.
 func (cs *CmdServer) Close() {
 	log.Println("HTTP command server terminating")
 	cs.server.Close()
@@ -87,4 +91,12 @@ func (cs *CmdServer) spreadHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to send payload `%s` to peer id `%s` with error: %+v", spayload, pid, err)
 		}
 	}
+}
+
+type JoinPayload struct {
+
+}
+
+// TODO joinHandler
+func (cs *CmdServer) joinHandler(w http.ResponseWriter, r *http.Request) {
 }
