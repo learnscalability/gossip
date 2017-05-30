@@ -91,12 +91,35 @@ func (cs *CmdServer) spreadHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to send payload `%s` to peer id `%s` with error: %+v", spayload, pid, err)
 		}
 	}
+	w.WriteHeader(http.StatusOK)
 }
 
 type JoinPayload struct {
-
+	Pid     string `json:"pid"`
+	Bind    string `json:"bind"`
 }
 
 // TODO joinHandler
 func (cs *CmdServer) joinHandler(w http.ResponseWriter, r *http.Request) {
+	var (
+		jp JoinPayload
+		err error
+	)
+	err = json.NewDecoder(r.Body).Decode(&jp)
+	if err != nil {
+		log.Println("Failed to read request body with error: %+v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	cs.peer.view.AddPeer(PeerConfig{
+		Pid: jp.Pid,
+		Bind: jp.Bind,
+	})
+	err = cs.peer.SendJoin(jp.Pid, jp.Bind)
+	if err != nil {
+		log.Println("Failed to send request join request with error: %+v", err)
+		http.Error(w, "Failed to send join request ", http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }

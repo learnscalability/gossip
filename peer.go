@@ -80,6 +80,8 @@ func (p *Peer) udpHandler() {
 		err    error
 		buf    = make([]byte, 10*1024) // 10KB
 		update pb.Update
+		exists bool
+		pid string
 	)
 	for {
 		n, caddr, err = p.listener.ReadFrom(buf)
@@ -91,6 +93,22 @@ func (p *Peer) udpHandler() {
 			log.Fatalf("Unable to unmarshal update data: %+v", err)
 		}
 		log.Printf("Received data `%s` from %s\n", update.Payload, caddr)
+		if update.Type == pb.Update_JOIN {
+			log.Println("Adding join peer to the current peer view")
+			exists = p.view.AddPeer(PeerConfig{
+				Pid: update.JoinPayload.Pid,
+				Bind: update.JoinPayload.Bind,
+			})
+			if exists == false {
+				log.Println("Forwarding join request")
+				for pid = range p.view {
+					err = p.Send(pid, string(buf))
+					if err != nil {
+						log.Printf("Failed to send payload `%s` to peer id `%s` with error: %+v", buf, pid, err)
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -123,6 +141,37 @@ func (p *Peer) Send(pid string, content string) error {
 		return fmt.Errorf("Failed to publish update %+s with error: %+v", content, err)
 	}
 	log.Printf("Published update %+v to remote peer %+s", pid, pc)
+	return nil
+}
+
+func (p *Peer) SendJoin(pid, bind string) error {
+	var (
+		update pb.Update
+		buf []byte
+		err error
+		conn   net.Conn
+	)
+	update = pb.Update{
+		Type: pb.Update_JOIN,
+		JoinPayload: &pb.Update_Join{
+			Pid: p.config.Pid,
+			Bind: p.config.Bind,
+		},
+	}
+	buf, err = proto.Marshal(&update)
+	if err != nil {
+		return fmt.Errorf("Failed to marshall join update %+s with error: %+v", update, err)
+	}
+	conn, err = net.Dial("udp", bind)
+	if err != nil {
+		return fmt.Errorf("Failed to contact remote peer %s with error: %+v", pid, err)
+	}
+	defer conn.Close()
+	_, err = conn.Write(buf)
+	if err != nil {
+		return fmt.Errorf("Failed to publish update %+s with error: %+v", buf, err)
+	}
+	log.Printf("Published update %+v to remote peer %s", update, pid)
 	return nil
 }
 

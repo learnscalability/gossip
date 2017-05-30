@@ -17,11 +17,12 @@ func NewView(configs []PeerConfig) View {
 }
 
 // AddPeer registers a new RemotePeer to the View and stores a connection to it.
-func (v View) AddPeer(pc PeerConfig) {
+func (v View) AddPeer(pc PeerConfig) bool {
 	var exists bool
 	if _, exists = v[pc.Pid]; !exists {
 		v[pc.Pid] = pc
 	}
+	return exists
 }
 
 // RemovePeer closes the UDP connection and remote the remote peer from the list.
