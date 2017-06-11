@@ -1,31 +1,28 @@
 package main
 
-// View is a set of remote peers indexed by their id.
-type View map[string]PeerConfig
+type view map[string]*peerConfig
 
-// NewView create a new set of remote peers and build connections to all of them.
-func NewView(configs []PeerConfig) View {
+func newView(configs []*peerConfig) view {
 	var (
-		v  View
-		pc PeerConfig
+		v = make(view)
+		pc *peerConfig
 	)
-	v = make(View)
 	for _, pc = range configs {
-		v[pc.Pid] = pc
+		v[pc.id] = pc
 	}
 	return v
 }
 
-// AddPeer registers a new RemotePeer to the View and stores a connection to it.
-func (v View) AddPeer(pc PeerConfig) bool {
+func (v view) add(pc *peerConfig) bool {
 	var exists bool
-	if _, exists = v[pc.Pid]; !exists {
-		v[pc.Pid] = pc
+	if _, exists = v[pc.id]; !exists {
+		v[pc.id] = pc
 	}
 	return exists
 }
 
-// RemovePeer closes the UDP connection and remote the remote peer from the list.
-func (v View) RemovePeer(pid string) {
-	delete(v, pid)
+func (v view) remove(id string) bool {
+	_, exists = v[id]
+	delete(v, id)
+	return exists
 }

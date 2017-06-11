@@ -13,10 +13,10 @@ import (
 	"github.com/learnscalability/gossip/pb"
 )
 
-// PeerConfig is used to unpack configurations from a config file.
-type PeerConfig struct {
+// peerConfig is used to unpack configurations from a config file.
+type peerConfig struct {
 	// Peer Unique Identifier.
-	Pid string `json:"pid"`
+	Id string `json:"id"`
 	// The address where the peer listens for datagrams.
 	Bind string `json:"bind"`
 	// HTTP interface used to control the peer.
@@ -26,54 +26,78 @@ type PeerConfig struct {
 }
 
 // Peer is the peer running this process.
-type Peer struct {
-	config    *PeerConfig
+type peer struct {
+	id string
+	bind string
+	commands chan interface{}
 	view      View
-	listener  net.PacketConn
+	udpListener  net.PacketConn
 	cmdServer *CmdServer
 }
 
-func NewPeer(cfg io.Reader) (*Peer, error) {
+func newPeer(config *peerConfig) (*peer, error) {
 	var (
 		err    error
-		config PeerConfig
 		peer   Peer
 	)
-	err = json.NewDecoder(cfg).Decode(&config)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to parse json peer config file with error: %+v", err)
-	}
-	peer.config = &config
+	peer.id = config.id
+	peer.bind = config.bind
+	peer.commands = make(chan interface{})
 	// Setting up the http command endpoints.
-	peer.cmdServer = NewCmdServer(&peer)
+	peer.cmdServer = NewCmdServer(config.CmdBind, commands)
 	// Setting up the peers connection
 	peer.view = NewView(config.Peers)
 	return &peer, nil
 }
 
 // Listen starts both the UDP listener and the HTTP command server.
-func (p *Peer) Listen() error {
+func (p *peer) Listen() error {
 	var (
 		err      error
 		listener net.PacketConn
 	)
 	// Setting up UDP listener
-	listener, err = net.ListenPacket("udp", p.config.Bind)
+	listener, err = net.ListenPacket("udp", p.bind)
 	if err != nil {
-		return fmt.Errorf("Unable to bind to udp address %s with error: %+v", p.config.Bind, err)
+		return fmt.Errorf("Unable to bind to udp address %s with error: %+v", p.bind, err)
 	} else {
-		log.Printf("UDP peer started on %s and accepting connections on %v", p.config.Bind, listener.LocalAddr())
+		log.Printf("UDP peer started on %s and accepting connections on %v", p.bind, listener.LocalAddr())
 	}
 	p.listener = listener
+	go p.runner()
 	go p.udpHandler()
 	// start http command server.
 	go p.cmdServer.Run()
 	return nil
 }
 
+// should be run as a goroutine.
+func (p *peer) runner() {
+	var (
+		unsafe interface{}
+	)
+	for {
+		select {
+		case unsafe, ok = <- p.commands:
+			if !ok {
+				return
+			}
+			select command := unsafe.(type) {
+			case *updatePeerCommand:
+				p.sendToPeer(command)
+			case *updateViewCommand:
+				p.sendToAll(command)
+			case *updateRandomCommand:
+
+			case *joinType:
+			}
+		}
+	}
+}
+
 // udpHandler read datagrams that are comming through the pipes.
 // Should be run as a goroutine.
-func (p *Peer) udpHandler() {
+func (p *peer) udpHandler() {
 	var (
 		n      int
 		caddr  net.Addr

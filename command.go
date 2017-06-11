@@ -1,4 +1,3 @@
-// This construct represents the peer's HTTP REST command interface
 package main
 
 import (
@@ -8,118 +7,102 @@ import (
 	"net/http"
 )
 
-type CmdServer struct {
-	server *http.Server
-	peer   *Peer
+const (
+	updatePeerType = yota
+	udpateViewType
+	updateRandomType
+	joinType
+)
+
+type updatePeerCommand struct {
+	Id string `json:"name"`
+	Content string `json:"content"`
 }
 
-func NewCmdServer(peer *Peer) *CmdServer {
+type updateViewCommand struct {
+	Content string `json:"content"`
+}
+
+type updateRandomCommand struct {
+	Percentage int `json:"percentage"`
+	Num int `json:"num"`
+	Content string `json:"content"`
+}
+
+type joinCommand struct {
+	Id string `json:"id"`
+	Bind string `json:"bind"`
+}
+
+type commandServer struct {
+	server *http.Server
+	commands chan<- interface{}
+}
+
+func newCommandServer(bind string, commands chan<- interface{}) *commandServer {
 	var (
 		mux    *http.ServeMux
 		server *http.Server
-		cs     CmdServer
+		cs     CommandServer
 	)
 	mux = http.NewServeMux()
 	server = &http.Server{
 		Handler: mux,
-		Addr:    peer.config.CmdBind,
+		Addr:    bind,
 	}
-	cs = CmdServer{server, peer}
-	mux.HandleFunc("/send", cs.sendHandler)
-	mux.HandleFunc("/spread", cs.spreadHandler)
-	mux.HandleFunc("/join", cs.joinHandler)
+	cs = CommandServer{server, commands}
+	mux.HandleFunc("/update/peer", cs.commandHandler(updatePeerType))
+	mux.HandleFunc("/update/view", cs.commandHandler(updateViewType))
+	mux.HandleFunc("/update/random", cs.commandHandler(updateRandomType))
+	mux.HandleFunc("/join", cs.commandHandler(joinType))
 	return &cs
 }
 
-// Run starts the http listener. Should be run as a goroutine.
-func (cs *CmdServer) Run() {
+func (cs *commandServer) listen() error {
 	log.Printf("HTTP command server started on %s\n", cs.server.Addr)
-	cs.server.ListenAndServe()
+	return cs.server.ListenAndServe()
 }
 
-// Close terminates the server and all connections without waiting for them
-// to close gracefully.
-func (cs *CmdServer) Close() {
+func (cs *commandServer) terminate() error {
 	log.Println("HTTP command server terminating")
-	cs.server.Close()
+	return cs.server.Close()
 }
 
-// SendPayload.
-type SendPayload struct {
-	Pid     string `json:"pid"`
-	Content string `json:"content"`
-}
+type httpHandler func(http.ResponseWriter, *http.Request)
 
-// sendHandler expects a body of the following format: {pid: string, content: string}
-func (cs *CmdServer) sendHandler(w http.ResponseWriter, r *http.Request) {
-	var (
-		sp  SendPayload
-		err error
-	)
-	err = json.NewDecoder(r.Body).Decode(&sp)
-	if err != nil {
-		log.Println("Failed to read request body with error: %+v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	err = cs.peer.Send(sp.Pid, sp.Content)
-	if err != nil {
-		log.Printf("Failed to send message to peer %+v with error %+v", sp, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
-func (cs *CmdServer) spreadHandler(w http.ResponseWriter, r *http.Request) {
-	var (
-		payload []byte
-		spayload string
-		err error
-		pid string
-	)
-	payload, err = ioutil.ReadAll(r.Body)
-	if err != nil {
-		log.Println("Failed to read request body with error: %+v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	spayload = string(payload)
-	for pid = range cs.peer.view {
-		err = cs.peer.Send(pid, spayload)
-		if err != nil {
-			log.Printf("Failed to send payload `%s` to peer id `%s` with error: %+v", spayload, pid, err)
+func (cs *commandServer) commandHandler(typ int) httpHandler {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var (
+			decoder = json.NewDecoder(r.Body)
+			err error
+			cmd interface{}
+		)
+		switch typ {
+		case updatePeerType:
+			cmd = updatePeerCommand{}
+			err = decoder.Decode(&cmd)
+		case updateViewType:
+			cmd = updateViewCommand{}
+			err = decoder.Decode(&cmd)
+		case updateRandomType:
+			cmd = updateRandomCommand{}
+			err = decoder.Decode(&cmd)
+		case joinType:
+			cmd = joinCommand{}
+			err = decoder.Decode(&cmd)
+		default:
+			err = fmt.Errorf("unrecognized payload command type: %d", typ)
 		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		select {
+		case cs.commands <- &cmd:
+		case r.Context().Done():
+			http.Error(w, "server closing. retry!", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}
-	w.WriteHeader(http.StatusOK)
-}
-
-type JoinPayload struct {
-	Pid     string `json:"pid"`
-	Bind    string `json:"bind"`
-}
-
-// TODO joinHandler
-func (cs *CmdServer) joinHandler(w http.ResponseWriter, r *http.Request) {
-	var (
-		jp JoinPayload
-		err error
-	)
-	err = json.NewDecoder(r.Body).Decode(&jp)
-	if err != nil {
-		log.Println("Failed to read request body with error: %+v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	cs.peer.view.AddPeer(PeerConfig{
-		Pid: jp.Pid,
-		Bind: jp.Bind,
-	})
-	err = cs.peer.SendJoin(jp.Pid, jp.Bind)
-	if err != nil {
-		log.Println("Failed to send request join request with error: %+v", err)
-		http.Error(w, "Failed to send join request ", http.StatusBadRequest)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
 }
